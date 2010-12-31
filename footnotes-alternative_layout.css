@@ -1,10 +1,12 @@
 /*
  * CSS specific to Footnotes module.
-*
-* Thanks to binford2k@lug.wsu.edu for this tip and drinkypoo
-* for the question leading up to it. http://drupal.org/node/80538
-*/
- 
+ *                                                                             
+ * This is an alternative layout, it is not so nice but overcomes              
+ * the layout bugs on IE. http://drupal.org/node/166628                        
+ * To use this layout, just rename this file to footnotes.css.                 
+ */                                                                            
+
+
 
 /* Add empty space before footnotes and a black line on top. */
 .footnotes {
@@ -37,21 +39,18 @@ ul.footnotes {
   padding-left: 0;
 }
 ul.footnotes li {
-  margin-left: 2.5em;
+  margin-left: 0.5em;
   list-style-type: none;
   background: none; /* Garland theme sets a bullet via background image, this must be unset! See bug 861634 */
 }
 
 
-/* Move the footnote number outside of the margin for footnote text (hanging indent) */
-ul.footnotes {
-  /* This is apparently very needed for the "position: absolute;" below to work correctly*/
-  position: relative; 
-}
 .footnotes .footnote-label {
-  position: absolute;
-  left: 0px;
-  z-index: 2;
+  vertical-align: top;
+  position: relative;
+  top: -0.35em;
+  left: -0.35em;
+  font-size: 0.8em;
 }
 
 /* Highlight the target footnote (or ref number, if a backlink was used) when user clicks a footnote. */
@@ -63,11 +62,6 @@ ul.footnotes {
   border: solid 1px #aaaaaa;
 }
 
-
-/* Note: This CSS has a minor bug on all versions of IE in that the footnote numbers 
-are aligned with the absolute bottom of their space, thus being a couple of pixels 
-lower than their corresponding line of text. IE5.5 has a serious bug in that the numbers 
-are not shifted left at all, thus being garbled together with the start of their text. */
 
 /* 
   Make the multiple backlinks a supertext^1

@@ -10,6 +10,11 @@
  * but can be used with any input format. The second filter outputs footnotes in 
  * Textile format. This means you should run this filter together and before the 
  * Textile filter.
+ * Note: The Textile filter is no longer maintained.
+ * 
+ * The Better URL filter is a fork of the URL filter in Drupal core filter.module. The
+ * original filter in core is too simple when parsing and does not make links in footnotes clickable
+ * (in addition to many other bugs).
  */
 
 /**
@@ -64,6 +69,28 @@ function footnotes_filter_tips($delta, $format, $long = FALSE) {
   }
 }
 
+
+/**
+ * Options for the Footnotes filter.
+ *
+ * This has currently 1 setting, the feature to collapse together footnotes
+ * with identical content is an option.
+ */
+function _footnotes_settings($format) {
+  $form['footnotes'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Footnotes'),
+    '#collapsible' => TRUE,
+  );
+  $form['footnotes']['footnotes_collapse_' . $format] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Collapse footnotes with same content'),
+    '#default_value' => variable_get('footnotes_collapse_' . $format, 0),
+    '#description' => t('If two footnotes have the exact same content, they will be collapsed into one as if using the same value="" attribute.'),
+  );
+  return $form;
+}
+
 /**
  * Implementation of hook_filter().
  *
@@ -78,7 +105,7 @@ function footnotes_filter($op, $delta = 0, $format = -1, $text = '') {
     return array(
       0 => t('Footnotes [fn]...[/fn]'),
       1 => t('Footnotes Textile style'),
-      99 => t('Better URL filter (fork from core)')
+      99 => t('Better URL filter')
     );
   }
 
@@ -100,6 +127,9 @@ function footnotes_filter($op, $delta = 0, $format = -1, $text = '') {
         // to at least return the input text as-is.
         case 'prepare':
           return $text;
+
+        case 'settings':
+          return _footnotes_settings($format);
 
         // The actual filtering is performed here. The supplied text should be
         // returned, once any necessary substitutions have taken place.
@@ -127,6 +157,9 @@ function footnotes_filter($op, $delta = 0, $format = -1, $text = '') {
           elseif( $open_tags > $close_tags + 1) {
             trigger_error(t("You have unclosed fn tags. This is invalid and will produce unpredictable results."));
           }
+
+          // Before doing the replacement, the callback function needs to know which options to use.
+          _footnotes_replace_callback(variable_get('footnotes_collapse_' . $format, 0), 'prepare');
 
           $pattern = '|<fn([^>]*)>(.*?)</fn>|s';
           $text = preg_replace_callback($pattern , '_footnotes_replace_callback', $text);
@@ -184,7 +217,7 @@ function footnotes_filter($op, $delta = 0, $format = -1, $text = '') {
     case 99:
       switch ($op) {
         case 'description':
-          return t('Better URL filter: Turns web and e-mail addresses into clickable links. NOTE: This filter is an enhancement to the Drupal core URL filter and will be deprecated if the enhancements are ever committed to Drupal core. <a href="http://drupal.org/node/161217">#161217</a>');
+          return t('Better URL filter: Turns web and e-mail addresses into clickable links. (Note: This code is now in Drupal 7 core and will be removed from the Footnotes module in Drupal 7. <a href="http://drupal.org/node/161217">#161217</a>)');
 
         // We don't need the "prepare" operation for this filter, but it's required
         // to at least return the input text as-is.
@@ -204,15 +237,52 @@ function footnotes_filter($op, $delta = 0, $format = -1, $text = '') {
 
 
 /**
+ * Search the $store_matches array for footnote text that matches and return the value.
+ *
+ * Note: This does a linear search on the $store_matches array. For a large list of 
+ * footnotes it would be more efficient to maintain a separate array with the footnote
+ * content as key, in order to do a hash lookup at this stage. Since you typically
+ * only have a handful of footnotes, this simple search is assumed to be more efficient.
+ * (but was not tested).
+ *
+ * @author djdevin (see http://drupal.org/node/808214)
+ * 
+ * @param string The footnote text
+ * @param array The matches array
+ *
+ * @return mixed The value of the existing footnote, FALSE otherwise
+ */
+function _footnotes_helper_find_footnote($text, &$store_matches) {
+  if (!empty($store_matches)) {
+    foreach ($store_matches as &$fn) {
+      if ($fn['text'] == $text) {
+        return $fn['value'];
+      }
+    }
+  }  
+  return FALSE;
+}
+ 
+
+/**
  * Helper function called from preg_replace_callback() above
  *
  * Uses static vars to temporarily store footnotes found.
  * In my understanding, this is not threadsafe?!
  */
 function _footnotes_replace_callback( $matches, $op = '' ) {
+  static $opt_collapse = 0;
   static $n = 0;
   static $store_matches = array();
+  static $used_values = array();
   $str = '';
+
+  if ($op == 'prepare') {
+    // In the 'prepare' case, the first argument contains the options to use.
+    // The name 'matches' is incorrect, we just use the variable anyway.
+    $opt_collapse = $matches;    
+    return 0;
+  }
 
   if( $op == 'output footer' ) {
     if (count($store_matches) > 0) {
@@ -220,8 +290,11 @@ function _footnotes_replace_callback( $matches, $op = '' ) {
       // as a list
       $str = theme('footnote_list',$store_matches);
     }
+    // Reset the static variables so they can be used again next time
     $n = 0;
     $store_matches = array();
+    $used_values = array();
+
     return $str;
   }
 
@@ -246,9 +319,14 @@ function _footnotes_replace_callback( $matches, $op = '' ) {
   if ($value) {
     // A value label was found. If it is numeric, record it in $n so further notes
     // can increment from there.
-    if (is_numeric($value)) {
+    // After adding support for multiple references to same footnote in the body (http://drupal.org/node/636808)
+    // also must check that $n is monotonously increasing
+    if ( is_numeric($value) && $n < $value ) {
       $n = $value;
     }
+  } elseif ($opt_collapse and $value_existing = _footnotes_helper_find_footnote($matches[2],$store_matches)) {
+    // An identical footnote already exists. Set value to the previously existing value.
+    $value = $value_existing;
   } else {
     // No value label, either a plain <fn> or unparsable attributes. Increment the
     // footnote counter, set label equal to it.
@@ -279,14 +357,37 @@ function _footnotes_replace_callback( $matches, $op = '' ) {
     'ref_id' => 'footnoteref' . $value_id . '_' . $randstr
   );
 
-  // Store the footnote item.
-  array_push( $store_matches, $fn );
+  // We now allow to repeat the footnote value label, in which case the link to the previously
+  // existing footnote is returned. Content of the current footnote is ignored.
+  // See http://drupal.org/node/636808
+  if( ! in_array( $value, $used_values ) )
+  {
+    // This is the normal case, add the footnote to $store_matches
+
+    // Store the footnote item.
+    array_push( $store_matches, $fn );
+    array_push( $used_values, $value );
+  }
+  else
+  {
+    // A footnote with the same label already exists
+
+    // Use the text and id from the first footnote with this value. 
+    // Any text in this footnote is discarded.
+    $i = array_search( $value, $used_values );
+    $fn['text'] = $store_matches[$i]['text'];
+    $fn['text_clean'] = $store_matches[$i]['text_clean'];
+    $fn['fn_id'] = $store_matches[$i]['fn_id'];
+    // Push the new ref_id into the first occurence of this footnote label
+    // The stored footnote thus holds a list of ref_id's rather than just one id
+    $ref_array = is_array($store_matches[$i]['ref_id']) ? $store_matches[$i]['ref_id'] : array( $store_matches[$i]['ref_id'] );
+    array_push( $ref_array, $fn['ref_id'] );
+    $store_matches[$i]['ref_id'] = $ref_array;
+  }
+
   // Return the item themed into a footnote link.
   return theme('footnote_link',$fn);
 }
-
-
-
 
 
 /**
@@ -364,7 +465,7 @@ function footnotes_theme( ) {
  *            footnote listing, used to allow links to the list from the body
  */
 function theme_footnote_link($fn) {
-  return '<a class="see_footnote" id="' . $fn['ref_id'] . 
+  return '<a class="see-footnote" id="' . $fn['ref_id'] . 
          '" title="' . $fn['text_clean'] . '" href="#' . $fn['fn_id'] . '">' .
          $fn['value'] . '</a>';
 }
@@ -383,13 +484,34 @@ function theme_footnote_link($fn) {
  *            footnote listing, used to allow links to the list from the body
  */
 function theme_footnote_list($footnotes) {
-  $str = '<ol class="footnotes">';
+  $str = '<ul class="footnotes">';
   // loop through the footnotes
   foreach ($footnotes as $fn) {
-    $str .= '<li><a class="footnote" id="' . $fn['fn_id'] .'" href="#' . $fn['ref_id'] . '">' . $fn['value'] . '.</a> ';
-    $str .= $fn['text'] . "</li>\n";
+    if( ! is_array( $fn['ref_id'] ) )
+    {
+      // Output normal footnote
+      $str .= '<li class="footnote" id="' . $fn['fn_id'] .'"><a class="footnote-label" href="#' . $fn['ref_id'] . '">' . $fn['value'] . '.</a> ';
+      $str .= $fn['text'] . "</li>\n";
+    }
+    else
+    {
+      // Output footnote that has more than one reference to it in the body.
+      // The only difference is to insert backlinks to all references.
+      // Helper: we need to enumerate a, b, c...
+      $abc = str_split("abcdefghijklmnopqrstuvwxyz"); $i = 0;
+
+      $str .= '<li class="footnote" id="' . $fn['fn_id'] .'"><span class="footnote-label">' . $fn['value'] . '.</span> ';
+      foreach ( $fn['ref_id'] as $ref ) 
+      {
+        $str .= '<a class="footnote-multi" href="#' . $ref . '">' . $abc[$i] . '.</a> ';
+        $i++;
+      }
+      $str .= $fn['text'] . "</li>\n";   
+    }
+    
+
   }
-  $str .= "</ol>\n";
+  $str .= "</ul>\n";
   return $str;
 }
 
@@ -528,7 +650,7 @@ function _footnotes_filter_url_settings($format) {
  */
 function _footnotes_filter_url($text, $format) {
   // List of tags - the content of which must be skipped.
-  $ignoretags = 'a|script|style|code';
+  $ignoretags = 'a|script|style|code|textarea';
 
   // This filter identifies and makes clickable links of 3 types of "links".
   // 1) URL's like http://www.example.com.
@@ -568,8 +690,8 @@ function _footnotes_filter_url($text, $format) {
   // tags must be correctly protected before the next replacement can be done.
   foreach ($tasks as $task => $re) {
     // Split at all tags.
-    // This ensures that nothing that is a tagname or attribute will be processed.
-    $chunks = preg_split('/(<.+?>)/i', $text, -1, PREG_SPLIT_DELIM_CAPTURE);
+    // This ensures that nothing that is a tagname or attribute or html comment will be processed.
+    $chunks = preg_split('/(<.+?>)/is', $text, -1, PREG_SPLIT_DELIM_CAPTURE);
     // Note: PHP ensures the array consists of alternating delimiters and literals
     // and begins and ends with a literal (inserting NULL as required).
     // Therefore, first chunk is always text:
